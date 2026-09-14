@@ -48,5 +48,12 @@ app.use(express.static(path.resolve('dist')));
 app.get('/{*path}',(req,res)=>res.sendFile(path.resolve('dist/index.html')));
 app.use((e,req,res,next)=>{if(e instanceof z.ZodError)return res.status(400).json({error:e.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; ')});if(e.code===11000)return res.status(409).json({error:'An account with this email already exists'});res.status(500).json({error:mongoose.connection.readyState!==1?'Database unavailable. Please try again shortly.':'Unable to complete this request. Please try again.'});});
 async function connect(){try{await mongoose.connect(process.env.MONGODB_URI,{serverSelectionTimeoutMS:10000});for(const p of products)await Product.updateOne({slug:p.slug},{$setOnInsert:p},{upsert:true});console.log('MongoDB connected; catalog ready');}catch(e){console.error('MongoDB connection failed:',e.name,'Check Atlas network access and credentials.');setTimeout(connect,30000).unref();}}
-startWelcomeWorker(User);
-connect();app.listen(process.env.PORT||4000,()=>console.log('API listening on port '+(process.env.PORT||4000)));
+// Vercel imports this Express app as a serverless function. A long-running
+// listener and interval worker are only valid for the local Node.js server.
+connect();
+if(!process.env.VERCEL){
+  startWelcomeWorker(User);
+  app.listen(process.env.PORT||4000,()=>console.log('API listening on port '+(process.env.PORT||4000)));
+}
+
+export default app;
