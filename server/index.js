@@ -13,7 +13,7 @@ import path from 'node:path';
 import {z} from 'zod';
 import {products} from './catalog.js';
 import {totals} from './checkout.js';
-import {pendingWelcome,startWelcomeWorker} from './email.js';
+import {pendingWelcome,sendWelcomeEmail,startWelcomeWorker} from './email.js';
 const app=express();
 if(!process.env.JWT_SECRET) throw new Error('JWT_SECRET must be configured in .env');
 mongoose.set('bufferCommands',false);
@@ -33,15 +33,24 @@ app.use('/api',async(req,res,next)=>{
 });
 const authLimit=rateLimit({windowMs:15*60000,limit:30});
 const publicUser=u=>({id:u._id,name:u.name,email:u.email});
+async function deliverWelcomeOnVercel(user){
+  if(!process.env.VERCEL)return;
+  try{
+    const result=await sendWelcomeEmail(user);
+    if(result.status==='accepted')await User.updateOne({_id:user._id},{$set:{'welcomeEmail.status':'accepted','welcomeEmail.providerId':result.providerId,'welcomeEmail.acceptedAt':new Date()},$unset:{'welcomeEmail.lastError':1}});
+  }catch(error){
+    await User.updateOne({_id:user._id},{$set:{'welcomeEmail.status':'failed','welcomeEmail.lastError':error.message}}).catch(()=>{});
+  }
+}
 function session(res,u){res.cookie('session',jwt.sign({sub:String(u._id)},process.env.JWT_SECRET,{expiresIn:'7d'}),{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',maxAge:7*86400000});res.json({user:publicUser(u)});}
 async function auth(req,res,next){try{const token=jwt.verify(req.cookies.session,process.env.JWT_SECRET);req.user=await User.findById(token.sub);if(!req.user)throw Error();next();}catch{res.status(401).json({error:'Please sign in to continue'});}}
 const credentials=z.object({email:z.email().max(254).transform(s=>s.toLowerCase()),password:z.string().min(8).max(128)});
 app.get('/api/health',async(req,res)=>{try{await connect();res.json({database:'connected'});}catch{res.status(503).json({database:'disconnected'});}});
 app.get('/api/config',(req,res)=>res.json({googleClientId:process.env.GOOGLE_CLIENT_ID||'',paymentsEnabled:!!razor}));
 app.get('/api/products',async(req,res)=>{if(mongoose.connection.readyState!==1)return res.json({products,preview:true});res.json({products:await Product.find().lean(),preview:false});});
-app.post('/api/auth/signup',authLimit,async(req,res,next)=>{try{const data=credentials.extend({name:z.string().trim().min(2).max(80)}).parse(req.body);const u=await User.create({...data,password:await bcrypt.hash(data.password,12),welcomeEmail:pendingWelcome()});session(res,u);}catch(e){next(e);}});
+app.post('/api/auth/signup',authLimit,async(req,res,next)=>{try{const data=credentials.extend({name:z.string().trim().min(2).max(80)}).parse(req.body);const u=await User.create({...data,password:await bcrypt.hash(data.password,12),welcomeEmail:pendingWelcome()});await deliverWelcomeOnVercel(u);session(res,u);}catch(e){next(e);}});
 app.post('/api/auth/login',authLimit,async(req,res,next)=>{try{const data=credentials.parse(req.body);const u=await User.findOne({email:data.email});if(!u?.password||!await bcrypt.compare(data.password,u.password))return res.status(401).json({error:'Email or password is incorrect'});session(res,u);}catch(e){next(e);}});
-app.post('/api/auth/google',authLimit,async(req,res,next)=>{try{if(!process.env.GOOGLE_CLIENT_ID)return res.status(503).json({error:'Google sign-in requires a Google client ID in .env.'});const ticket=await new OAuth2Client(process.env.GOOGLE_CLIENT_ID).verifyIdToken({idToken:z.string().parse(req.body.credential),audience:process.env.GOOGLE_CLIENT_ID});const p=ticket.getPayload();if(!p.email_verified) return res.status(400).json({error:'Google email is not verified'});let u=await User.findOne({googleId:p.sub});if(!u){if(await User.exists({email:p.email.toLowerCase()}))return res.status(409).json({error:'This email already has an account. Please sign in with your password.'});u=await User.create({googleId:p.sub,email:p.email.toLowerCase(),name:p.name,welcomeEmail:pendingWelcome()});}session(res,u);}catch(e){next(e);}});
+app.post('/api/auth/google',authLimit,async(req,res,next)=>{try{if(!process.env.GOOGLE_CLIENT_ID)return res.status(503).json({error:'Google sign-in requires a Google client ID in .env.'});const ticket=await new OAuth2Client(process.env.GOOGLE_CLIENT_ID).verifyIdToken({idToken:z.string().parse(req.body.credential),audience:process.env.GOOGLE_CLIENT_ID});const p=ticket.getPayload();if(!p.email_verified) return res.status(400).json({error:'Google email is not verified'});let u=await User.findOne({googleId:p.sub});let isNew=false;if(!u){if(await User.exists({email:p.email.toLowerCase()}))return res.status(409).json({error:'This email already has an account. Please sign in with your password.'});u=await User.create({googleId:p.sub,email:p.email.toLowerCase(),name:p.name,welcomeEmail:pendingWelcome()});isNew=true;}if(isNew)await deliverWelcomeOnVercel(u);session(res,u);}catch(e){next(e);}});
 app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser(req.user)}));
 app.post('/api/auth/logout',(req,res)=>{res.clearCookie('session');res.json({ok:true});});
 const checkout=z.object({items:z.array(z.object({slug:z.string(),quantity:z.number().int().min(1).max(10)})).min(1).max(30),address:z.object({name:z.string().trim().min(2).max(80),phone:z.string().regex(/^[6-9]\d{9}$/),line:z.string().trim().min(8).max(300),city:z.string().trim().min(2).max(80),state:z.string().trim().min(2).max(80),pin:z.string().regex(/^[1-9]\d{5}$/)}),paymentMethod:z.enum(['cod','razorpay'])});
