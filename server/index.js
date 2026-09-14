@@ -26,12 +26,17 @@ app.post('/api/payments/webhook',express.raw({type:'application/json'}),async(re
 app.use(express.json({limit:'32kb'}),cookieParser());
 app.use('/api',rateLimit({windowMs:60000,limit:150}));
 app.use('/api',(req,res,next)=>{if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.headers.origin&&req.headers.origin!==(process.env.APP_URL||'http://localhost:5173'))return res.status(403).json({error:'Origin not allowed'});next();});
+app.use('/api',async(req,res,next)=>{
+  if(req.path==='/config'||req.path==='/health')return next();
+  try{await connect();next();}
+  catch{return res.status(503).json({error:'Database unavailable. Please try again shortly.'});}
+});
 const authLimit=rateLimit({windowMs:15*60000,limit:30});
 const publicUser=u=>({id:u._id,name:u.name,email:u.email});
 function session(res,u){res.cookie('session',jwt.sign({sub:String(u._id)},process.env.JWT_SECRET,{expiresIn:'7d'}),{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',maxAge:7*86400000});res.json({user:publicUser(u)});}
 async function auth(req,res,next){try{const token=jwt.verify(req.cookies.session,process.env.JWT_SECRET);req.user=await User.findById(token.sub);if(!req.user)throw Error();next();}catch{res.status(401).json({error:'Please sign in to continue'});}}
 const credentials=z.object({email:z.email().max(254).transform(s=>s.toLowerCase()),password:z.string().min(8).max(128)});
-app.get('/api/health',(req,res)=>res.json({database:mongoose.connection.readyState===1?'connected':'disconnected'}));
+app.get('/api/health',async(req,res)=>{try{await connect();res.json({database:'connected'});}catch{res.status(503).json({database:'disconnected'});}});
 app.get('/api/config',(req,res)=>res.json({googleClientId:process.env.GOOGLE_CLIENT_ID||'',paymentsEnabled:!!razor}));
 app.get('/api/products',async(req,res)=>{if(mongoose.connection.readyState!==1)return res.json({products,preview:true});res.json({products:await Product.find().lean(),preview:false});});
 app.post('/api/auth/signup',authLimit,async(req,res,next)=>{try{const data=credentials.extend({name:z.string().trim().min(2).max(80)}).parse(req.body);const u=await User.create({...data,password:await bcrypt.hash(data.password,12),welcomeEmail:pendingWelcome()});session(res,u);}catch(e){next(e);}});
@@ -47,10 +52,19 @@ app.get('/api/orders',auth,async(req,res,next)=>{try{res.json({orders:await Orde
 app.use(express.static(path.resolve('dist')));
 app.get('/{*path}',(req,res)=>res.sendFile(path.resolve('dist/index.html')));
 app.use((e,req,res,next)=>{if(e instanceof z.ZodError)return res.status(400).json({error:e.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; ')});if(e.code===11000)return res.status(409).json({error:'An account with this email already exists'});res.status(500).json({error:mongoose.connection.readyState!==1?'Database unavailable. Please try again shortly.':'Unable to complete this request. Please try again.'});});
-async function connect(){try{await mongoose.connect(process.env.MONGODB_URI,{serverSelectionTimeoutMS:10000});for(const p of products)await Product.updateOne({slug:p.slug},{$setOnInsert:p},{upsert:true});console.log('MongoDB connected; catalog ready');}catch(e){console.error('MongoDB connection failed:',e.name,'Check Atlas network access and credentials.');setTimeout(connect,30000).unref();}}
+let connectionPromise;
+async function connect(){
+  if(mongoose.connection.readyState===1)return;
+  if(connectionPromise)return connectionPromise;
+  connectionPromise=mongoose.connect(process.env.MONGODB_URI,{serverSelectionTimeoutMS:10000})
+    .then(async()=>{for(const p of products)await Product.updateOne({slug:p.slug},{$setOnInsert:p},{upsert:true});console.log('MongoDB connected; catalog ready');})
+    .catch(e=>{console.error('MongoDB connection failed:',e.name,'Check Atlas network access and credentials.');throw e;})
+    .finally(()=>{connectionPromise=null;});
+  return connectionPromise;
+}
 // Vercel imports this Express app as a serverless function. A long-running
 // listener and interval worker are only valid for the local Node.js server.
-connect();
+connect().catch(()=>{});
 if(!process.env.VERCEL){
   startWelcomeWorker(User);
   app.listen(process.env.PORT||4000,()=>console.log('API listening on port '+(process.env.PORT||4000)));
