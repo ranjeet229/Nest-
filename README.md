@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The API runs on port 4000. On Windows PowerShell, use `npm.cmd` if execution policy blocks `npm.ps1`.
+Open https://nest-eight-pi.vercel.app. The API runs on port 4000. On Windows PowerShell, use `npm.cmd` if execution policy blocks `npm.ps1`.
 
 The requested `.env` is already created, with the supplied MongoDB URI and a generated session signing secret. It is ignored by Git. No `.env.example` is used. Never copy its contents into source control or frontend environment variables.
 
