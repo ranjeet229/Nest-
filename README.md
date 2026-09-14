@@ -30,17 +30,10 @@ Official integration references: [Razorpay](https://razorpay.com/docs/payments/s
 
 ## Signup welcome emails
 
-Welcome emails now use Gmail SMTP through Nodemailer. The sender is fixed to **Nest <kiranjeetkr80@gmail.com>**. Both the recipient and Reply-To are the new account's email address, as requested. This means pressing Reply addresses the user's own inbox. Normal login does not trigger another welcome email; email signup and first-time Google signup queue one notification.
+Welcome emails now use Gmail SMTP through Nodemailer. Both the recipient and Reply-To are the new account's email address, as requested. This means pressing Reply addresses the user's own inbox. Normal login does not trigger another welcome email; email signup and first-time Google signup queue one notification.
 
 Only one email credential is needed in the existing .env:
 
-```dotenv
-GMAIL_APP_PASSWORD=your_google_app_password
-```
-
-1. Sign into **kiranjeetkr80@gmail.com** and enable 2-Step Verification in Google Account Security.
-2. Open https://myaccount.google.com/apppasswords, create an App Password named Nest, and enter it in GMAIL_APP_PASSWORD locally. Do not use the account's normal password. Spaces in the generated App Password are removed automatically.
-3. Restart with `npm.cmd run dev`. New signup emails are processed every 5 seconds while the API is running.
 
 Google may not offer App Passwords for some managed accounts or security configurations; see [Google's App Password instructions](https://support.google.com/accounts/answer/185833). Sending from a deployed server requires outbound access to smtp.gmail.com on TLS port 465. Gmail limits and security checks apply; inbox placement is not guaranteed. See [Nodemailer's Gmail guide](https://nodemailer.com/guides/using-gmail).
 
