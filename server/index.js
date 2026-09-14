@@ -1,0 +1,52 @@
+import 'dotenv/config';
+import express from 'express';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import {rateLimit} from 'express-rate-limit';
+import {OAuth2Client} from 'google-auth-library';
+import Razorpay from 'razorpay';
+import crypto from 'node:crypto';
+import path from 'node:path';
+import {z} from 'zod';
+import {products} from './catalog.js';
+import {totals} from './checkout.js';
+import {pendingWelcome,startWelcomeWorker} from './email.js';
+const app=express();
+if(!process.env.JWT_SECRET) throw new Error('JWT_SECRET must be configured in .env');
+mongoose.set('bufferCommands',false);
+const User=mongoose.model('User',new mongoose.Schema({name:String,email:{type:String,unique:true},password:String,googleId:String,welcomeEmail:{type:new mongoose.Schema({status:String,attempts:Number,nextAttemptAt:Date,firstAttemptAt:Date,acceptedAt:Date,providerId:String,lastError:String,payload:mongoose.Schema.Types.Mixed},{_id:false}),default:undefined}},{timestamps:true}));
+const Product=mongoose.model('Product',new mongoose.Schema({slug:{type:String,unique:true},name:String,description:String,category:String,price:Number,original:Number,image:String,rating:Number,reviews:Number,badge:String,stock:Number}));
+const Order=mongoose.model('Order',new mongoose.Schema({user:mongoose.Schema.Types.ObjectId,items:Array,address:Object,subtotal:Number,shipping:Number,total:Number,paymentMethod:String,status:{type:String,default:'pending'},razorpayOrderId:String,paymentId:String},{timestamps:true}));
+const razor=process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET?new Razorpay({key_id:process.env.RAZORPAY_KEY_ID,key_secret:process.env.RAZORPAY_KEY_SECRET}):null;
+app.use(helmet({contentSecurityPolicy:false}));
+app.post('/api/payments/webhook',express.raw({type:'application/json'}),async(req,res,next)=>{try{if(!process.env.RAZORPAY_WEBHOOK_SECRET)return res.sendStatus(503);const expected=crypto.createHmac('sha256',process.env.RAZORPAY_WEBHOOK_SECRET).update(req.body).digest('hex');if(!safeEqual(expected,req.headers['x-razorpay-signature']))return res.sendStatus(400);const event=JSON.parse(req.body);const p=event.payload?.payment?.entity;if(event.event==='payment.captured'&&p)await Order.updateOne({razorpayOrderId:p.order_id,total:p.amount/100,status:'pending'},{$set:{status:'paid',paymentId:p.id}});res.json({ok:true});}catch(e){next(e);}});
+app.use(express.json({limit:'32kb'}),cookieParser());
+app.use('/api',rateLimit({windowMs:60000,limit:150}));
+app.use('/api',(req,res,next)=>{if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.headers.origin&&req.headers.origin!==(process.env.APP_URL||'http://localhost:5173'))return res.status(403).json({error:'Origin not allowed'});next();});
+const authLimit=rateLimit({windowMs:15*60000,limit:30});
+const publicUser=u=>({id:u._id,name:u.name,email:u.email});
+function session(res,u){res.cookie('session',jwt.sign({sub:String(u._id)},process.env.JWT_SECRET,{expiresIn:'7d'}),{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',maxAge:7*86400000});res.json({user:publicUser(u)});}
+async function auth(req,res,next){try{const token=jwt.verify(req.cookies.session,process.env.JWT_SECRET);req.user=await User.findById(token.sub);if(!req.user)throw Error();next();}catch{res.status(401).json({error:'Please sign in to continue'});}}
+const credentials=z.object({email:z.email().max(254).transform(s=>s.toLowerCase()),password:z.string().min(8).max(128)});
+app.get('/api/health',(req,res)=>res.json({database:mongoose.connection.readyState===1?'connected':'disconnected'}));
+app.get('/api/config',(req,res)=>res.json({googleClientId:process.env.GOOGLE_CLIENT_ID||'',paymentsEnabled:!!razor}));
+app.get('/api/products',async(req,res)=>{if(mongoose.connection.readyState!==1)return res.json({products,preview:true});res.json({products:await Product.find().lean(),preview:false});});
+app.post('/api/auth/signup',authLimit,async(req,res,next)=>{try{const data=credentials.extend({name:z.string().trim().min(2).max(80)}).parse(req.body);const u=await User.create({...data,password:await bcrypt.hash(data.password,12),welcomeEmail:pendingWelcome()});session(res,u);}catch(e){next(e);}});
+app.post('/api/auth/login',authLimit,async(req,res,next)=>{try{const data=credentials.parse(req.body);const u=await User.findOne({email:data.email});if(!u?.password||!await bcrypt.compare(data.password,u.password))return res.status(401).json({error:'Email or password is incorrect'});session(res,u);}catch(e){next(e);}});
+app.post('/api/auth/google',authLimit,async(req,res,next)=>{try{if(!process.env.GOOGLE_CLIENT_ID)return res.status(503).json({error:'Google sign-in requires a Google client ID in .env.'});const ticket=await new OAuth2Client(process.env.GOOGLE_CLIENT_ID).verifyIdToken({idToken:z.string().parse(req.body.credential),audience:process.env.GOOGLE_CLIENT_ID});const p=ticket.getPayload();if(!p.email_verified) return res.status(400).json({error:'Google email is not verified'});let u=await User.findOne({googleId:p.sub});if(!u){if(await User.exists({email:p.email.toLowerCase()}))return res.status(409).json({error:'This email already has an account. Please sign in with your password.'});u=await User.create({googleId:p.sub,email:p.email.toLowerCase(),name:p.name,welcomeEmail:pendingWelcome()});}session(res,u);}catch(e){next(e);}});
+app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser(req.user)}));
+app.post('/api/auth/logout',(req,res)=>{res.clearCookie('session');res.json({ok:true});});
+const checkout=z.object({items:z.array(z.object({slug:z.string(),quantity:z.number().int().min(1).max(10)})).min(1).max(30),address:z.object({name:z.string().trim().min(2).max(80),phone:z.string().regex(/^[6-9]\d{9}$/),line:z.string().trim().min(8).max(300),city:z.string().trim().min(2).max(80),state:z.string().trim().min(2).max(80),pin:z.string().regex(/^[1-9]\d{5}$/)}),paymentMethod:z.enum(['cod','razorpay'])});
+app.post('/api/orders',auth,async(req,res,next)=>{try{const data=checkout.parse(req.body);if(data.paymentMethod==='razorpay'&&!razor)return res.status(503).json({error:'Online payments are not configured. Please choose cash on delivery.'});const ids=data.items.map(i=>i.slug);if(new Set(ids).size!==ids.length)return res.status(400).json({error:'Duplicate cart items'});const list=await Product.find({slug:{$in:ids}});const items=data.items.map(i=>{const p=list.find(p=>p.slug===i.slug);if(!p||p.stock<i.quantity)throw new Error('An item is unavailable. Please update your bag.');return {slug:p.slug,name:p.name,image:p.image,price:p.price,quantity:i.quantity};});const order=await Order.create({user:req.user._id,items,address:data.address,...totals(items),paymentMethod:data.paymentMethod,status:data.paymentMethod==='cod'?'confirmed':'pending'});if(data.paymentMethod==='razorpay'){const r=await razor.orders.create({amount:order.total*100,currency:'INR',receipt:String(order._id)});order.razorpayOrderId=r.id;await order.save();}res.status(201).json({order,keyId:process.env.RAZORPAY_KEY_ID});}catch(e){next(e);}});
+function safeEqual(a,b){return typeof b==='string'&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));}
+app.post('/api/payments/verify',auth,async(req,res,next)=>{try{if(!razor)return res.sendStatus(503);const order=await Order.findOne({_id:req.body.orderId,user:req.user._id});if(!order||!order.razorpayOrderId)return res.sendStatus(404);const expected=crypto.createHmac('sha256',process.env.RAZORPAY_KEY_SECRET).update(`${order.razorpayOrderId}|${req.body.razorpay_payment_id}`).digest('hex');if(!safeEqual(expected,req.body.razorpay_signature))return res.status(400).json({error:'Invalid payment signature'});const payment=await razor.payments.fetch(req.body.razorpay_payment_id);if(payment.status!=='captured'||payment.amount!==order.total*100||payment.currency!=='INR'||payment.order_id!==order.razorpayOrderId)return res.status(409).json({error:'Payment is awaiting confirmation. Check your orders shortly.'});order.status='paid';order.paymentId=payment.id;await order.save();res.json({order});}catch(e){next(e);}});
+app.get('/api/orders',auth,async(req,res,next)=>{try{res.json({orders:await Order.find({user:req.user._id}).sort({createdAt:-1})});}catch(e){next(e);}});
+app.use(express.static(path.resolve('dist')));
+app.get('/{*path}',(req,res)=>res.sendFile(path.resolve('dist/index.html')));
+app.use((e,req,res,next)=>{if(e instanceof z.ZodError)return res.status(400).json({error:e.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; ')});if(e.code===11000)return res.status(409).json({error:'An account with this email already exists'});res.status(500).json({error:mongoose.connection.readyState!==1?'Database unavailable. Please try again shortly.':'Unable to complete this request. Please try again.'});});
+async function connect(){try{await mongoose.connect(process.env.MONGODB_URI,{serverSelectionTimeoutMS:10000});for(const p of products)await Product.updateOne({slug:p.slug},{$setOnInsert:p},{upsert:true});console.log('MongoDB connected; catalog ready');}catch(e){console.error('MongoDB connection failed:',e.name,'Check Atlas network access and credentials.');setTimeout(connect,30000).unref();}}
+startWelcomeWorker(User);
+connect();app.listen(process.env.PORT||4000,()=>console.log('API listening on port '+(process.env.PORT||4000)));
