@@ -1,0 +1,47 @@
+.hero-chair {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 260ms ease, transform 420ms ease;
+}
+
+.hero-chair.is-changing {
+  opacity: 0;
+  transform: scale(1.025);
+}
+
+/* The original hero was composed for one chair photo. Remove those photo-specific
+   overlays so every carousel image has a clean, consistent crop. */
+.hero .hero-art::after { display: none; }
+.hero .hero-chair { mix-blend-mode: normal; object-position: center; }
+.hero .floating-label,
+.hero .hero-price,
+.hero .vertical-label { display: none; }
+
+.hero-copy { animation: hero-copy-in 480ms ease both; }
+@keyframes hero-copy-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Search stays visually quiet when focused, with an accessible clear control. */
+.search input:focus { border: 0; box-shadow: none; }
+.clear-search { color: #728074; font-size: 23px; line-height: 1; padding: 0 3px; margin-left: -4px; }
+.clear-search[hidden] { display: none; }
+.clear-search:hover { color: #176b4a; }
+
+.announcement { display: none; }
+.notification-button { position: relative; width: 30px; height: 30px; border: 1px solid #dfe7d9; border-radius: 50%; color: #176b4a; font-size: 22px; }
+.notification-button b { position: absolute; top: -6px; right: -8px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: #c95945; color: #fff; font-size: 8px; }
+.notification-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.notification-panel { position: fixed; z-index: 110; right: 28px; top: 88px; width: min(390px,calc(100vw - 28px)); overflow: hidden; border: 1px solid #dce5d8; border-radius: 12px; background: #fffefa; box-shadow: 0 18px 55px #2032252b; }
+.notification-panel { opacity: 0; transform: translateY(-10px) scale(.98); transition: opacity 180ms ease, transform 180ms ease; }.notification-panel.is-open { opacity: 1; transform: translateY(0) scale(1); }
+.notification-panel header { display:flex; align-items:center; justify-content:space-between; padding:18px 20px; border-bottom:1px solid #e6ebe3; color:#176b4a; font-size:13px; }
+.notification-panel header button { color:#176b4a; font-size:10px; font-weight:700; text-transform:uppercase; }
+.notification-panel article { display:flex; flex-direction:column; gap:7px; padding:17px 20px; border-bottom:1px solid #e6ebe3; background:#f1f7ed; color:#314234; }
+.notification-panel article b { font-size:12px; }.notification-panel article span { font-size:11px; line-height:1.5; color:#758071; }
+.catalog-pagination { display:flex; justify-content:center; gap:7px; margin:34px 0 8px; }.catalog-pagination button { min-width:34px; height:34px; padding:0 9px; border:1px solid #dbe3d5; border-radius:5px; color:#55705b; font-size:11px; }.catalog-pagination button.active { background:#176b4a; color:#fff; border-color:#176b4a; }.catalog-pagination button:disabled { opacity:.45; }
+.catalog-pagination span { min-width:22px; display:grid; place-items:center; color:#758071; font-weight:700; letter-spacing:1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-chair { transition: none; }
+}
