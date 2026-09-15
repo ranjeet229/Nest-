@@ -18,7 +18,7 @@ const app=express();
 if(!process.env.JWT_SECRET) throw new Error('JWT_SECRET must be configured in .env');
 mongoose.set('bufferCommands',false);
 const User=mongoose.model('User',new mongoose.Schema({name:String,email:{type:String,unique:true},password:String,googleId:String,welcomeEmail:{type:new mongoose.Schema({status:String,attempts:Number,nextAttemptAt:Date,firstAttemptAt:Date,acceptedAt:Date,providerId:String,lastError:String,payload:mongoose.Schema.Types.Mixed},{_id:false}),default:undefined}},{timestamps:true}));
-const Product=mongoose.model('Product',new mongoose.Schema({slug:{type:String,unique:true},name:String,description:String,category:String,price:Number,original:Number,image:String,rating:Number,reviews:Number,badge:String,stock:Number}));
+const Product=mongoose.model('Product',new mongoose.Schema({slug:{type:String,unique:true},name:String,company:String,description:String,category:String,price:Number,original:Number,image:String,rating:Number,reviews:Number,badge:String,stock:Number}));
 const Order=mongoose.model('Order',new mongoose.Schema({user:mongoose.Schema.Types.ObjectId,items:Array,address:Object,subtotal:Number,shipping:Number,total:Number,paymentMethod:String,status:{type:String,default:'pending'},razorpayOrderId:String,paymentId:String},{timestamps:true}));
 const razor=process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET?new Razorpay({key_id:process.env.RAZORPAY_KEY_ID,key_secret:process.env.RAZORPAY_KEY_SECRET}):null;
 app.use(helmet({contentSecurityPolicy:false}));
@@ -66,7 +66,7 @@ async function connect(){
   if(mongoose.connection.readyState===1)return;
   if(connectionPromise)return connectionPromise;
   connectionPromise=mongoose.connect(process.env.MONGODB_URI,{serverSelectionTimeoutMS:10000})
-    .then(async()=>{for(const p of products)await Product.updateOne({slug:p.slug},{$setOnInsert:p},{upsert:true});console.log('MongoDB connected; catalog ready');})
+    .then(async()=>{for(let i=0;i<products.length;i+=500)await Product.bulkWrite(products.slice(i,i+500).map(p=>({updateOne:{filter:{slug:p.slug},update:{$set:p},upsert:true}})));console.log('MongoDB connected; catalog ready');})
     .catch(e=>{console.error('MongoDB connection failed:',e.name,'Check Atlas network access and credentials.');throw e;})
     .finally(()=>{connectionPromise=null;});
   return connectionPromise;
